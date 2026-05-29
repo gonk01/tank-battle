@@ -9,6 +9,7 @@ import {
   GAME_W,
   GAME_H,
   PLAYER_INITIAL_HP,
+  PLAYER_INITIAL_ATTACK,
   getSpeedBonus,
 } from './constants';
 import { Bullet } from './Bullet';
@@ -40,6 +41,13 @@ export class Tank {
   aiTimer = 60;
   aiShootTimer = 30 + Math.floor(Math.random() * 40);
 
+  // 分身标记
+  isClone = false;
+
+  // 冰封减速
+  slowTimer = 0;
+  slowFactor = 1;
+
   constructor(x: number, y: number, dir: Direction, isPlayer: boolean, level = 0) {
     this.x = x;
     this.y = y;
@@ -51,7 +59,7 @@ export class Tank {
     if (isPlayer) {
       this.maxHp = PLAYER_INITIAL_HP;
       this.hp = PLAYER_INITIAL_HP;
-      this.attack = 1;
+      this.attack = PLAYER_INITIAL_ATTACK;
     } else {
       this.maxHp = 1;
       this.hp = 1;
@@ -63,7 +71,15 @@ export class Tank {
   get cy(): number { return this.y + this.h / 2; }
 
   get baseSpeed(): number {
-    if (!this.isPlayer) return 1.2;
+    if (this.isClone) return 1.8; // 分身稍快
+    if (!this.isPlayer) {
+      const base = 1.2;
+      // 冰封减速
+      if (this.slowTimer > 0) {
+        return base * this.slowFactor;
+      }
+      return base;
+    }
     const base = 2;
     if (!this.skills || this.skills.speed.level === 0) return base;
     return base * getSpeedBonus(this.skills.speed.level);
@@ -87,6 +103,8 @@ export class Tank {
 
     for (const t of tanks) {
       if (t === this || !t.alive) continue;
+      // 分身不与玩家碰撞
+      if (this.isClone && t.isPlayer) continue;
       if (rectCollide({ x: newX, y: newY, w: this.w, h: this.h }, { x: t.x, y: t.y, w: t.w, h: t.h }))
         return false;
     }
@@ -141,14 +159,14 @@ export class Tank {
   }
 
   takeDamage(damage: number): boolean {
-    // 闪避检查（仅玩家）
+    // 闪避检查（仅玩家，分身不闪避）
     if (this.isPlayer && this.skills) {
       const dodgeLevel = this.skills.dodge.level;
       if (dodgeLevel > 0) {
         const chance = Math.min(50, 8 + (dodgeLevel - 1) * 4);
         if (Math.random() * 100 < chance) {
           this.flash = 5;
-          return false; // 闪避成功
+          return false;
         }
       }
     }
@@ -166,13 +184,31 @@ export class Tank {
     if (this.cooldown > 0) this.cooldown--;
     if (this.flash > 0) this.flash--;
     if (this.meleeCooldown > 0) this.meleeCooldown--;
+    if (this.slowTimer > 0) {
+      this.slowTimer--;
+      if (this.slowTimer <= 0) {
+        this.slowFactor = 1;
+      }
+    }
   }
 
   draw(ctx: CanvasRenderingContext2D, frameCount: number, theme: ThemeConfig): void {
     if (!this.alive) return;
     if (this.flash > 0 && Math.floor(this.flash / 3) % 2 === 0) return;
 
-    // 选择主题色
+    // 分身渲染
+    if (this.isClone) {
+      this.drawClone(ctx, frameCount, theme);
+      return;
+    }
+
+    // 冰封减速视觉效果
+    if (this.slowTimer > 0 && !this.isPlayer) {
+      ctx.save();
+      ctx.shadowColor = 'rgba(100,200,255,0.6)';
+      ctx.shadowBlur = 8;
+    }
+
     const colors = this.isPlayer ? {
       body: theme.playerBody,
       turret: theme.playerTurret,
@@ -276,6 +312,64 @@ export class Tank {
     }
 
     ctx.restore();
+
+    // 冰封视觉
+    if (this.slowTimer > 0 && !this.isPlayer) {
+      ctx.restore(); // 恢复 shadowBlur 的 save
+    }
+  }
+
+  private drawClone(ctx: CanvasRenderingContext2D, frameCount: number, _theme: ThemeConfig): void {
+    const cx = this.cx;
+    const cy = this.cy;
+    const hw = this.w / 2;
+    const hh = this.h / 2;
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(this.dir * (Math.PI / 2));
+    ctx.globalAlpha = 0.7;
+
+    // 蓝色光晕
+    const glowAlpha = 0.15 + 0.05 * Math.sin(frameCount * 0.08);
+    const grad = ctx.createRadialGradient(0, 0, 2, 0, 0, hw + 6);
+    grad.addColorStop(0, `rgba(0,100,255,${glowAlpha})`);
+    grad.addColorStop(1, 'rgba(0,100,255,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(0, 0, hw + 6, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 履带
+    ctx.fillStyle = '#3355aa';
+    ctx.fillRect(-hw, -hh, this.w, 5);
+    ctx.fillRect(-hw, hh - 5, this.w, 5);
+
+    const bodyW = this.w - 8;
+    const bodyH = this.h - 8;
+
+    // 主体（蓝调）
+    ctx.fillStyle = '#4466cc';
+    ctx.fillRect(-bodyW / 2, -bodyH / 2, bodyW, bodyH);
+
+    // 高光
+    ctx.fillStyle = '#7799ff';
+    ctx.globalAlpha = 0.4;
+    ctx.fillRect(-bodyW / 2 + 2, -bodyH / 2 + 2, bodyW - 4, 3);
+
+    // 炮塔
+    ctx.globalAlpha = 0.8;
+    ctx.fillStyle = '#5577dd';
+    ctx.beginPath();
+    ctx.arc(0, 0, 6, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 炮管
+    ctx.fillStyle = '#5577dd';
+    ctx.fillRect(-2, -hh + 2, 4, hh - 4);
+
+    ctx.globalAlpha = 1;
+    ctx.restore();
   }
 
   private drawDecal(ctx: CanvasRenderingContext2D, theme: ThemeConfig): void {
@@ -284,17 +378,14 @@ export class Tank {
 
     switch (decal) {
       case 'skull':
-        // 骷髅：圆头 + 眼睛 + X 骨
         ctx.strokeStyle = 'rgba(0,0,0,0.6)';
         ctx.lineWidth = 1.5;
         ctx.beginPath();
         ctx.arc(0, -2, 5, 0, Math.PI * 2);
         ctx.stroke();
-        // 眼睛
         ctx.fillStyle = 'rgba(0,0,0,0.6)';
         ctx.fillRect(-3, -4, 2, 2);
         ctx.fillRect(2, -4, 2, 2);
-        // X 骨
         ctx.strokeStyle = 'rgba(0,0,0,0.4)';
         ctx.lineWidth = 1;
         ctx.beginPath();
@@ -306,13 +397,11 @@ export class Tank {
         break;
 
       case 'star':
-        // 白星（二战美军）
         ctx.fillStyle = 'rgba(255,255,255,0.5)';
         this.drawStar(ctx, 0, 0, 4, 5);
         break;
 
       case 'leaf':
-        // 叶片
         ctx.fillStyle = 'rgba(100,200,50,0.4)';
         ctx.beginPath();
         ctx.ellipse(0, 0, 4, 2, 0, 0, Math.PI * 2);
@@ -323,7 +412,6 @@ export class Tank {
         break;
 
       case 'flame':
-        // 火焰标记
         ctx.fillStyle = 'rgba(255,100,0,0.4)';
         ctx.beginPath();
         ctx.moveTo(0, 4);
@@ -341,14 +429,12 @@ export class Tank {
         break;
 
       case 'cross':
-        // 铁十字
         ctx.fillStyle = 'rgba(180,180,180,0.4)';
         ctx.fillRect(-1, -5, 2, 10);
         ctx.fillRect(-5, -1, 10, 2);
         break;
 
       case 'thorn':
-        // 荆棘
         ctx.strokeStyle = 'rgba(80,160,40,0.4)';
         ctx.lineWidth = 1;
         for (let i = 0; i < 4; i++) {

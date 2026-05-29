@@ -2,26 +2,31 @@
 //  坦克大战 — 游戏引擎（无尽模式）
 // ============================================================
 
-import type { GameState, KeysPressed } from './types';
-import { Direction } from './types';
-import type { SkillType } from './types';
-import type { ThemeConfig, PlayerSkills } from './types';
+import type { GameState, KeysPressed, Difficulty as DifficultyType } from './types';
+import { Direction, Difficulty, SpecialSkillType } from './types';
+import type { SkillType, ThemeConfig, SpecialSkillType as SpecialSkillTypeType } from './types';
 import {
   CELL, COLS, ROWS, TANK_SIZE,
   GAME_W, GAME_H,
   PLAYER_SPAWN_COL, PLAYER_SPAWN_ROW,
-  INITIAL_ENEMY_COUNT,
   getSpawnInterval, getMaxAliveEnemies,
-  getScoreForLevel, getExpNeeded, getExpProgress,
+  getKillExpProgress, getKillExpNeeded, getLevelFromKills,
   createDefaultSkills,
   getEnemyHp, getEnemySpeedMultiplier, getEnemyDamage,
   getRegenHeal,
+  DIFFICULTY_CONFIGS,
+  PLAYER_INITIAL_HP, PLAYER_INITIAL_ATTACK,
+  LARGE_TANK_WARNING_DURATION,
+  LARGE_TANK_RESPAWN_LEVEL_INTERVAL,
 } from './constants';
 import { createMap } from './map';
 import { Tank } from './Tank';
 import { Bullet } from './Bullet';
 import { Explosion, MeleeEffect, ExplosiveEffect } from './Explosion';
-import { updateEnemyAI, trySpawnEnemy, checkMeleeAttack } from './enemyAI';
+import { updateEnemyAI, trySpawnEnemy, checkMeleeAttack, updateCloneAI } from './enemyAI';
+import { SoundManager } from './SoundManager';
+import { LargeTank } from './LargeTank';
+import { SpecialSkillManager } from './SpecialSkillManager';
 
 type StateCallback = (state: GameState) => void;
 
@@ -29,6 +34,8 @@ export class GameEngine {
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
   theme: ThemeConfig;
+  difficulty: DifficultyType;
+  sound: SoundManager;
 
   map = createMap();
   tanks: Tank[] = [];
@@ -55,7 +62,25 @@ export class GameEngine {
   gameOver = false;
   upgrading = false;
   showUpgradeChoice = false;
-  gameTime = 0; // 秒
+  showSpecialSkillChoice = false;
+  specialSkillChoices: SpecialSkillTypeType[] = [];
+  pendingIceSlowChoice = false;
+  gameTime = 0;
+
+  // 大型坦克
+  largeTank: LargeTank | null = null;
+  largeTankSpawnTimer = 0;
+  largeTankWarningTimer = 0;
+  largeTankWarningVisible = false;
+  largeTankWarningX = 0;
+  largeTankWarningY = 0;
+  lastPlayerLevelForRespawn = 0;
+
+  // 特殊技能管理器
+  skillManager: SpecialSkillManager;
+
+  // 地雷
+  mines: { x: number; y: number; size: number; alive: boolean; pulseTimer: number }[] = [];
 
   frameCount = 0;
   lastTime = 0;
@@ -67,12 +92,17 @@ export class GameEngine {
   onStateChange: StateCallback | null = null;
   onUpgradeChoice: ((choices: any) => void) | null = null;
 
-  constructor(canvas: HTMLCanvasElement, theme: ThemeConfig) {
+  constructor(canvas: HTMLCanvasElement, theme: ThemeConfig, difficulty: DifficultyType = Difficulty.NORMAL) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d')!;
     this.canvas.width = GAME_W;
     this.canvas.height = GAME_H;
     this.theme = theme;
+    this.difficulty = difficulty;
+    this.sound = new SoundManager();
+    this.skillManager = new SpecialSkillManager(
+      null as any, this.tanks, this.bullets, this.map, this.sound
+    );
 
     this.player = this.createPlayer();
     this.init();
@@ -85,6 +115,9 @@ export class GameEngine {
       Direction.UP, true
     );
     t.skills = createDefaultSkills();
+    t.maxHp = PLAYER_INITIAL_HP;
+    t.hp = PLAYER_INITIAL_HP;
+    t.attack = PLAYER_INITIAL_ATTACK;
     return t;
   }
 
@@ -95,6 +128,7 @@ export class GameEngine {
     this.explosions = [];
     this.meleeEffects = [];
     this.explosiveEffects = [];
+    this.mines = [];
     this.score = 0;
     this.kills = 0;
     this.playerLevel = 0;
@@ -104,17 +138,32 @@ export class GameEngine {
     this.gameOver = false;
     this.upgrading = false;
     this.showUpgradeChoice = false;
+    this.showSpecialSkillChoice = false;
+    this.specialSkillChoices = [];
+    this.pendingIceSlowChoice = false;
     this.paused = false;
     this.gameTime = 0;
     this.frameCount = 0;
     this.lastTime = 0;
     this.accumulator = 0;
 
+    // 大型坦克重置
+    this.largeTank = null;
+    this.largeTankSpawnTimer = DIFFICULTY_CONFIGS[this.difficulty].largeTankSpawnInterval * 60;
+    this.largeTankWarningVisible = false;
+    this.largeTankWarningTimer = 0;
+    this.lastPlayerLevelForRespawn = 0;
+
     this.player = this.createPlayer();
     this.tanks.push(this.player);
 
-    // 开局生成 10 个敌人
-    for (let i = 0; i < INITIAL_ENEMY_COUNT; i++) {
+    // 重新初始化 skillManager
+    this.skillManager.setPlayer(this.player);
+    this.skillManager.setTanks(this.tanks);
+    this.mines = this.skillManager.mines;
+
+    const cfg = DIFFICULTY_CONFIGS[this.difficulty];
+    for (let i = 0; i < cfg.initialEnemyCount; i++) {
       this.spawnEnemy();
     }
 
@@ -160,6 +209,15 @@ export class GameEngine {
     for (const e of this.explosiveEffects) e.update();
     this.explosiveEffects = this.explosiveEffects.filter(e => !e.dead);
 
+    // 地雷脉冲动画
+    for (const m of this.mines) {
+      if (m.alive) m.pulseTimer++;
+    }
+
+    // 特殊技能管理器更新
+    this.skillManager.update(this.frameCount);
+    this.mines = this.skillManager.mines;
+
     // 升级选择弹窗暂停
     if (this.showUpgradeChoice || this.upgrading) return;
     if (this.gameOver || this.paused) return;
@@ -172,24 +230,61 @@ export class GameEngine {
     this.player.update();
 
     // 敌人 AI + 近战
-    const enemies = this.tanks.filter(t => !t.isPlayer && t.alive);
-    const difficultyDamage = getEnemyDamage(this.kills);
+    const enemies = this.tanks.filter(t => !t.isPlayer && t.alive && !(t as any).isClone);
+    const clones = this.tanks.filter(t => (t as any).isClone && t.alive);
+    const isPlayerInvisible = this.skillManager.isPlayerInvisibleNow();
+    const difficultyDamage = getEnemyDamage(this.kills, this.difficulty);
 
     for (const enemy of enemies) {
       enemy.update();
-      updateEnemyAI(enemy, this.map, this.tanks, this.player);
+      updateEnemyAI(enemy, this.map, this.tanks, this.player, isPlayerInvisible);
 
-      // 近战碰撞检测
       const meleeDmg = checkMeleeAttack(enemy, this.player, difficultyDamage);
       if (meleeDmg > 0) {
         this.meleeEffects.push(new MeleeEffect(enemy.cx, enemy.cy));
-        const killed = this.player.takeDamage(meleeDmg);
-        if (killed) {
-          this.gameOver = true;
-          this.emitState();
-          return;
+        // 瞬移检查
+        let teleported = false;
+        teleported = this.skillManager.onPlayerDamage();
+        if (!teleported) {
+          this.sound.playPlayerHit();
+          const killed = this.player.takeDamage(meleeDmg);
+          if (killed) {
+            this.gameOver = true;
+            this.sound.playExplosion();
+            this.emitState();
+            return;
+          }
+        } else {
+          this.sound.playTeleport();
         }
         this.emitState();
+      }
+    }
+
+    // 分身 AI
+    for (const clone of clones) {
+      clone.update();
+      updateCloneAI(clone, this.map, this.tanks, this.player);
+      // 分身碰撞自爆
+      for (const enemy of enemies) {
+        if (!enemy.alive) continue;
+        const dx = clone.cx - enemy.cx;
+        const dy = clone.cy - enemy.cy;
+        if (Math.abs(dx) < TANK_SIZE && Math.abs(dy) < TANK_SIZE) {
+          const dmg = this.player.attack * 2;
+          const killed = enemy.takeDamage(dmg);
+          this.explosions.push(new Explosion(clone.cx, clone.cy, true));
+          this.sound.playExplosion();
+          clone.alive = false;
+          if (killed) {
+            this.kills++;
+            this.score++;
+            this.playerLevel = getLevelFromKills(this.kills, this.difficulty);
+            this.applyRegen();
+            this.checkUpgrade();
+          }
+          break;
+        }
       }
     }
 
@@ -206,9 +301,88 @@ export class GameEngine {
       }
     }
 
+    // 大型坦克逻辑（仅当玩家有特殊技能时）
+    if (this.playerHasAnySpecialSkill()) {
+      // 预警阶段
+      if (this.largeTankWarningVisible) {
+        this.largeTankWarningTimer--;
+        if (this.largeTankWarningTimer % 60 === 0) {
+          this.sound.playLargeTankWarning();
+        }
+        if (this.largeTankWarningTimer <= 0) {
+          this.largeTankWarningVisible = false;
+          this.spawnLargeTank();
+        }
+      } else if (!this.largeTank || !this.largeTank.alive) {
+        this.largeTankSpawnTimer--;
+        if (this.largeTankSpawnTimer <= 0) {
+          // 显示预警
+          this.startLargeTankWarning();
+        }
+      }
+
+      // 大型坦克更新
+      if (this.largeTank && this.largeTank.alive) {
+        this.largeTank.update(this.map, this.tanks, this.player, this.bullets);
+      }
+    }
+
+    // 地雷碰撞检测
+    const allEnemies = this.tanks.filter(t => !t.isPlayer && t.alive && !(t as any).isClone);
+    for (const m of this.mines) {
+      if (!m.alive) continue;
+      for (const enemy of allEnemies) {
+        if (!enemy.alive) continue;
+        const dist = Math.hypot(m.x - enemy.cx, m.y - enemy.cy);
+        if (dist < m.size + TANK_SIZE / 2) {
+          const dmg = Math.ceil(this.player.attack * 1.5);
+          const killed = enemy.takeDamage(dmg);
+          m.alive = false;
+          this.explosions.push(new Explosion(m.x, m.y));
+          this.sound.playExplosion();
+          if (killed) {
+            this.kills++;
+            this.score = this.kills;
+            this.playerLevel = getLevelFromKills(this.kills, this.difficulty);
+            this.applyRegen();
+            this.checkUpgrade();
+          }
+          break;
+        }
+      }
+    }
+
     // 子弹 & 碰撞
     this.updateBullets();
     this.emitState();
+  }
+
+  /** 检查玩家是否解锁了任意特殊技能 */
+  private playerHasAnySpecialSkill(): boolean {
+    if (!this.player.skills) return false;
+    const special = this.player.skills.special;
+    return Object.values(special).some((s: any) => s.level > 0);
+  }
+
+  /** 开始大型坦克预警 */
+  private startLargeTankWarning(): void {
+    const spawnCol = Math.floor(COLS / 2);
+    const spawnRow = 2;
+    this.largeTankWarningX = spawnCol * CELL + (CELL - 56) / 2;
+    this.largeTankWarningY = spawnRow * CELL + (CELL - 56) / 2;
+    this.largeTankWarningTimer = LARGE_TANK_WARNING_DURATION;
+    this.largeTankWarningVisible = true;
+    this.sound.playLargeTankWarning();
+  }
+
+  /** 生成大型坦克 */
+  private spawnLargeTank(): void {
+    const spawnCol = Math.floor(COLS / 2);
+    const spawnRow = 2;
+    const sx = spawnCol * CELL + (CELL - 56) / 2;
+    const sy = spawnRow * CELL + (CELL - 56) / 2;
+    this.largeTank = new LargeTank(sx, sy, this.difficulty, this.player.maxHp);
+    this.sound.playLargeTankSpawn();
   }
 
   private handleInput(): void {
@@ -227,6 +401,7 @@ export class GameEngine {
     const shootNow = this.keys[' '];
     if (shootNow && !this.lastShootKey) {
       this.player.shoot(this.bullets);
+      this.sound.playShoot();
     }
     this.lastShootKey = shootNow;
   }
@@ -249,7 +424,6 @@ export class GameEngine {
           b.alive = false;
           continue;
         } else if (cell === 2) {
-          // 钢墙：弹射或销毁
           if (b.ricochetMax > 0 && b.ricochetCount < b.ricochetMax) {
             b.reflect();
             continue;
@@ -281,6 +455,8 @@ export class GameEngine {
         if (!t.alive) continue;
         if (b.owner === 'player' && t.isPlayer) continue;
         if (b.owner === 'enemy' && !t.isPlayer) continue;
+        // 追踪弹不伤害分身
+        if ((b as any).homingTarget && (t as any).isClone) continue;
         if (
           b.x < t.x + t.w && b.x + b.w > t.x &&
           b.y < t.y + t.h && b.y + b.h > t.y
@@ -291,18 +467,17 @@ export class GameEngine {
 
           if (killed) {
             this.explosions.push(new Explosion(t.cx, t.cy, true));
+            this.sound.playEnemyDeath();
             if (!t.isPlayer) {
               this.kills++;
-              this.score++;
-              this.playerLevel = this.getLevelFromScore(this.score);
+              this.score = this.kills;
+              this.playerLevel = getLevelFromKills(this.kills, this.difficulty);
 
-              // 吸血回复
               this.applyRegen();
-
-              // 检查升级
               this.checkUpgrade();
             } else {
               this.gameOver = true;
+              this.sound.playExplosion();
             }
           } else {
             this.explosions.push(new Explosion(b.x + b.w / 2, b.y + b.h / 2));
@@ -312,7 +487,7 @@ export class GameEngine {
           if (b.owner === 'player' && !t.isPlayer && b.pierceMax > 0) {
             b.applyPierceDamage();
             if (!b.alive) break;
-            continue; // 继续飞行
+            continue;
           }
 
           b.alive = false;
@@ -327,8 +502,10 @@ export class GameEngine {
   private handleBulletExplosion(b: Bullet): void {
     if (b.explosiveRadius > 0) {
       this.explosiveEffects.push(new ExplosiveEffect(b.cx, b.cy, b.explosiveRadius));
-      // AoE 伤害
-      const dmgPct = Math.min(100, 40 + (this.player.skills!.explosive.level - 1) * 10);
+      this.sound.playExplosion();
+      const dmgPct = this.player.skills
+        ? Math.min(100, 40 + (this.player.skills.explosive.level - 1) * 10)
+        : 100;
       const aoeDmg = Math.max(1, Math.floor(b.damage * dmgPct / 100));
       for (const t of this.tanks) {
         if (!t.alive) continue;
@@ -340,8 +517,8 @@ export class GameEngine {
             this.explosions.push(new Explosion(t.cx, t.cy, true));
             if (!t.isPlayer) {
               this.kills++;
-              this.score++;
-              this.playerLevel = this.getLevelFromScore(this.score);
+              this.score = this.kills;
+              this.playerLevel = getLevelFromKills(this.kills, this.difficulty);
               this.applyRegen();
               this.checkUpgrade();
             } else {
@@ -362,39 +539,41 @@ export class GameEngine {
     }
   }
 
-  private getLevelFromScore(score: number): number {
-    let level = 0;
-    while (getScoreForLevel(level + 1) <= score) {
-      level++;
-    }
-    return level;
-  }
-
   private checkUpgrade(): void {
-    const nextLevel = this.playerLevel;
-    if (nextLevel > this.player.level) {
-      this.player.level = nextLevel;
+    if (this.playerLevel > this.player.level) {
+      this.player.level = this.playerLevel;
       this.upgrading = true;
       this.showUpgradeChoice = true;
       this.paused = true;
+      this.sound.playLevelUp();
       this.emitState();
+
+      // 大型坦克追击
+      if (this.largeTank && this.largeTank.alive && this.largeTank.pursuitTimer !== undefined) {
+        this.largeTank.pursuitTimer = 300; // 5 秒追击
+      }
+
+      // 每 5 级复活大型坦克
+      if (this.playerLevel > 0 && this.playerLevel % LARGE_TANK_RESPAWN_LEVEL_INTERVAL === 0) {
+        if (this.playerLevel !== this.lastPlayerLevelForRespawn && this.playerHasAnySpecialSkill()) {
+          this.lastPlayerLevelForRespawn = this.playerLevel;
+          if (!this.largeTank || !this.largeTank.alive) {
+            this.startLargeTankWarning();
+          }
+        }
+      }
     }
   }
 
-  /** 玩家已选择升级 */
-  applyUpgrade(type: 'hp' | 'attack' | 'skill', skillType?: SkillType): void {
+  /** 玩家已选择升级（HP/ATK） */
+  applyUpgrade(type: 'hp' | 'attack', _skillType?: SkillType): void {
     if (type === 'hp') {
       this.hpChoiceCount++;
       const bonus = 2 + Math.floor(this.hpChoiceCount * 0.5);
       this.player.maxHp += bonus;
-      this.player.hp = this.player.maxHp; // 回满
+      this.player.hp = this.player.maxHp;
     } else if (type === 'attack') {
       this.player.attack += 1;
-    } else if (type === 'skill' && skillType && this.player.skills) {
-      const skill = this.player.skills[skillType as keyof PlayerSkills];
-      if (skill) {
-        skill.level += 1;
-      }
     }
 
     this.upgrading = false;
@@ -403,12 +582,75 @@ export class GameEngine {
     this.emitState();
   }
 
+  /** 选择特殊技能（触发二阶段） */
+  selectSpecialSkillChoice(): void {
+    if (!this.player.skills) return;
+    const allTypes = Object.values(SpecialSkillType) as SpecialSkillTypeType[];
+    // 随机抽 3 个（排除已达上限的：分身和追踪弹上限 5，其他无限）
+    const available = allTypes.filter(t => {
+      const s = this.player.skills!.special[t];
+      if (t === SpecialSkillType.CLONE || t === SpecialSkillType.HOMING) {
+        return s.level < 5;
+      }
+      return true;
+    });
+    const shuffled = [...available].sort(() => Math.random() - 0.5);
+    this.specialSkillChoices = shuffled.slice(0, 3);
+    this.showSpecialSkillChoice = true;
+    this.showUpgradeChoice = false;
+    this.emitState();
+  }
+
+  /** 应用特殊技能选择 */
+  applySpecialSkill(type: SpecialSkillTypeType): void {
+    if (!this.player.skills) return;
+    const skill = this.player.skills.special[type];
+    if (skill) {
+      skill.level += 1;
+    }
+    // 通知 skillManager
+    this.skillManager.onSkillChosen(type);
+    this.sound.playSpecialSkillActivate();
+
+    // 冰封子选择
+    if (type === SpecialSkillType.ICE_SLOW && skill && skill.level > 1) {
+      this.pendingIceSlowChoice = true;
+      this.showSpecialSkillChoice = false;
+      this.emitState();
+      return;
+    }
+
+    this.showSpecialSkillChoice = false;
+    this.upgrading = false;
+    this.paused = false;
+    this.emitState();
+  }
+
+  /** 冰封子选择 */
+  applyIceSlowChoice(choice: 'cooldown' | 'slow'): void {
+    if (choice === 'cooldown') {
+      this.skillManager.onIceSlowCooldownBoost();
+    } else {
+      this.skillManager.onIceSlowSlowBoost();
+    }
+    this.pendingIceSlowChoice = false;
+    this.upgrading = false;
+    this.paused = false;
+    this.emitState();
+  }
+
+  /** 切换音效 */
+  toggleSound(): void {
+    this.sound.toggleMute();
+    this.emitState();
+  }
+
   private spawnEnemy(): void {
     const enemy = trySpawnEnemy(
       this.map, this.tanks, this.kills,
-      getEnemyHp,
+      (k: number) => getEnemyHp(k, this.difficulty),
       getEnemySpeedMultiplier,
-      getEnemyDamage,
+      (k: number) => getEnemyDamage(k, this.difficulty),
     );
 
     if (enemy) {
@@ -420,16 +662,14 @@ export class GameEngine {
   private emitState(): void {
     if (!this.onStateChange) return;
 
-    // alive enemies count used internally
-
     this.onStateChange({
       score: this.score,
       hp: Math.ceil(this.player.hp),
       maxHp: this.player.maxHp,
       attack: this.player.attack,
       level: this.player.level,
-      expProgress: getExpProgress(this.score, this.player.level),
-      expNeeded: getExpNeeded(this.player.level),
+      expProgress: getKillExpProgress(this.kills, this.player.level, this.difficulty),
+      expNeeded: getKillExpNeeded(this.player.level, this.difficulty),
       kills: this.kills,
       timeSurvived: Math.floor(this.gameTime),
       gameOver: this.gameOver,
@@ -437,7 +677,14 @@ export class GameEngine {
       upgrading: this.upgrading,
       showUpgradeChoice: this.showUpgradeChoice,
       themeId: this.theme.id,
+      difficulty: this.difficulty,
       skills: this.player.skills || createDefaultSkills(),
+      specialSkills: this.player.skills?.special || createDefaultSkills().special,
+      showSpecialSkillChoice: this.showSpecialSkillChoice,
+      specialSkillChoices: this.specialSkillChoices,
+      pendingIceSlowChoice: this.pendingIceSlowChoice,
+      hasLargeTankWarning: this.largeTankWarningVisible,
+      soundMuted: this.sound.isMuted,
     });
   }
 
@@ -464,14 +711,37 @@ export class GameEngine {
       ctx.stroke();
     }
 
+    // 大型坦克预警
+    if (this.largeTankWarningVisible) {
+      this.drawLargeTankWarning(ctx);
+    }
+
     // 坦克
     for (const t of this.tanks) {
       t.draw(ctx, this.frameCount, this.theme);
     }
 
+    // 大型坦克
+    if (this.largeTank && this.largeTank.alive) {
+      this.largeTank.draw(ctx, this.frameCount, this.theme);
+    }
+
     // 子弹
     for (const b of this.bullets) {
       b.draw(ctx);
+    }
+
+    // 地雷
+    for (const m of this.mines) {
+      if (!m.alive) continue;
+      const pulse = 1 + 0.3 * Math.sin(m.pulseTimer * 0.1);
+      ctx.fillStyle = 'rgba(255,50,0,0.6)';
+      ctx.beginPath();
+      ctx.arc(m.x, m.y, m.size * pulse, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#ff0';
+      ctx.lineWidth = 1;
+      ctx.stroke();
     }
 
     // 特效
@@ -494,9 +764,40 @@ export class GameEngine {
     }
   }
 
+  private drawLargeTankWarning(ctx: CanvasRenderingContext2D): void {
+    const progress = 1 - this.largeTankWarningTimer / LARGE_TANK_WARNING_DURATION;
+    const pulseSize = 20 + 40 * Math.sin(progress * Math.PI * 6);
+    const alpha = 0.3 + 0.3 * Math.sin(progress * Math.PI * 6);
+
+    ctx.fillStyle = `rgba(255,0,0,${alpha})`;
+    ctx.beginPath();
+    ctx.arc(
+      this.largeTankWarningX + 28,
+      this.largeTankWarningY + 28,
+      pulseSize,
+      0, Math.PI * 2
+    );
+    ctx.fill();
+
+    ctx.strokeStyle = `rgba(255,50,0,${alpha + 0.2})`;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // 中心十字标记
+    const cx = this.largeTankWarningX + 28;
+    const cy = this.largeTankWarningY + 28;
+    ctx.strokeStyle = `rgba(255,0,0,${alpha + 0.3})`;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(cx - 10, cy);
+    ctx.lineTo(cx + 10, cy);
+    ctx.moveTo(cx, cy - 10);
+    ctx.lineTo(cx, cy + 10);
+    ctx.stroke();
+  }
+
   private drawMap(ctx: CanvasRenderingContext2D): void {
     const t = this.theme;
-    // 背景
     ctx.fillStyle = t.groundColor;
     ctx.fillRect(0, 0, GAME_W, GAME_H);
 

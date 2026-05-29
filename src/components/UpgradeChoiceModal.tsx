@@ -1,17 +1,9 @@
 // ============================================================
-//  坦克大战 — 升级选择弹窗
+//  坦克大战 — 升级选择弹窗（HP / ATK / 特殊技能）
 // ============================================================
 
 import React from 'react';
-import { SkillType } from '../engine/types';
 import type { PlayerSkills } from '../engine/types';
-import {
-  SKILL_CONFIGS,
-  getSpeedBonus,
-  getExplosiveRadius,
-  getDodgeChance,
-  getRegenHeal,
-} from '../engine/constants';
 
 interface UpgradeChoiceModalProps {
   level: number;
@@ -20,13 +12,15 @@ interface UpgradeChoiceModalProps {
   attack: number;
   hpChoiceCount: number;
   skills: PlayerSkills;
-  onChoose: (type: 'hp' | 'attack' | 'skill', skillType?: SkillType) => void;
+  onChoose: (type: 'hp' | 'attack') => void;
+  onSpecialSkillClick: () => void;
 }
 
 export const UpgradeChoiceModal: React.FC<UpgradeChoiceModalProps> = ({
-  level, hp, maxHp, attack, hpChoiceCount, skills, onChoose,
+  level, hp, maxHp, attack, hpChoiceCount, skills, onChoose, onSpecialSkillClick,
 }) => {
   const hpBonus = 2 + Math.floor(hpChoiceCount * 0.5);
+  const specialCount = Object.values(skills.special).filter((s: { level: number }) => s.level > 0).length;
 
   return (
     <div style={styles.overlay}>
@@ -63,37 +57,13 @@ export const UpgradeChoiceModal: React.FC<UpgradeChoiceModalProps> = ({
             <p style={styles.hint}>每颗子弹伤害 +1</p>
           </div>
 
-          {/* 技能 */}
-          <div style={styles.card}>
+          {/* 特殊技能 */}
+          <div style={{ ...styles.card, ...styles.specialCard }} onClick={onSpecialSkillClick}>
             <div style={styles.cardIcon}>✨</div>
-            <h3 style={styles.cardTitle}>技能强化</h3>
-            <div style={styles.skillList}>
-              {SKILL_CONFIGS.map((cfg) => {
-                const currentSkill = skills[cfg.type as keyof PlayerSkills];
-                const currentLevel = currentSkill?.level || 0;
-                const newLevel = currentLevel + 1;
-
-                return (
-                  <div
-                    key={cfg.type}
-                    style={styles.skillRow}
-                    onClick={() => onChoose('skill', cfg.type)}
-                  >
-                    <span style={styles.skillIcon}>{cfg.icon}</span>
-                    <div style={styles.skillInfo}>
-                      <span style={styles.skillName}>
-                        {cfg.name}
-                        <span style={styles.skillLevel}>
-                          Lv.{currentLevel} → Lv.{newLevel}
-                        </span>
-                      </span>
-                      <span style={styles.skillEffect}>
-                        {getEffectPreview(cfg.type, currentLevel, newLevel)}
-                      </span>
-                    </div>
-                  </div>
-                );
-              })}
+            <h3 style={styles.cardTitle}>特殊技能</h3>
+            <p style={styles.desc}>随机三选一特殊技能</p>
+            <div style={styles.specialBadge}>
+              {specialCount > 0 ? `已解锁 ${specialCount} 项` : '点击解锁'}
             </div>
           </div>
         </div>
@@ -103,35 +73,6 @@ export const UpgradeChoiceModal: React.FC<UpgradeChoiceModalProps> = ({
     </div>
   );
 };
-
-function getEffectPreview(type: SkillType, currentLevel: number, _newLevel: number): string {
-  switch (type) {
-    case SkillType.SPEED:
-      return currentLevel === 0
-        ? '获得速度 +8%'
-        : `速度 ${(getSpeedBonus(currentLevel) * 2).toFixed(2)} → ${(getSpeedBonus(_newLevel) * 2).toFixed(2)}`;
-    case SkillType.RICOCHET:
-      return currentLevel === 0
-        ? `获得 ${1} 次弹射`
-        : `弹射 ${currentLevel} → ${_newLevel} 次`;
-    case SkillType.EXPLOSIVE:
-      return currentLevel === 0
-        ? '获得范围爆炸'
-        : `半径 ${getExplosiveRadius(currentLevel)} → ${getExplosiveRadius(_newLevel)}px`;
-    case SkillType.DODGE:
-      return currentLevel === 0
-        ? `获得 ${getDodgeChance(_newLevel)}% 闪避`
-        : `闪避 ${getDodgeChance(currentLevel)}% → ${getDodgeChance(_newLevel)}%`;
-    case SkillType.PIERCE:
-      return currentLevel === 0
-        ? `获得 ${1} 次穿透`
-        : `穿透 ${currentLevel} → ${_newLevel} 次`;
-    case SkillType.REGEN:
-      return currentLevel === 0
-        ? `获得击杀回复 ${getRegenHeal(_newLevel).toFixed(1)} HP`
-        : `回复 ${getRegenHeal(currentLevel).toFixed(1)} → ${getRegenHeal(_newLevel).toFixed(1)} HP/杀`;
-  }
-}
 
 const styles: Record<string, React.CSSProperties> = {
   overlay: {
@@ -149,9 +90,7 @@ const styles: Record<string, React.CSSProperties> = {
     border: '2px solid #0f3460',
     borderRadius: 16,
     padding: '20px 28px',
-    maxWidth: 800,
-    maxHeight: '90%',
-    overflow: 'auto',
+    maxWidth: 650,
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
@@ -180,7 +119,7 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid #0f3460',
     borderRadius: 12,
     padding: 16,
-    minWidth: 180,
+    minWidth: 160,
     flex: 1,
     display: 'flex',
     flexDirection: 'column',
@@ -188,6 +127,9 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 8,
     cursor: 'pointer',
     transition: 'border-color 0.2s',
+  },
+  specialCard: {
+    border: '1px solid #7b2d8e',
   },
   cardIcon: { fontSize: 32 },
   cardTitle: { color: '#fff', fontSize: 16, margin: 0 },
@@ -209,47 +151,21 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12,
     fontWeight: 'bold',
   },
-  hint: { color: '#666', fontSize: 11, margin: 0 },
-  skillList: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 4,
-    width: '100%',
-    marginTop: 4,
-  },
-  skillRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-    padding: '4px 8px',
-    borderRadius: 6,
-    cursor: 'pointer',
-    background: 'rgba(255,255,255,0.03)',
-    transition: 'background 0.15s',
-  },
-  skillIcon: { fontSize: 16 },
-  skillInfo: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 1,
-    flex: 1,
-  },
-  skillName: {
-    color: '#ccc',
+  desc: {
+    color: '#c97dff',
     fontSize: 12,
-    display: 'flex',
-    gap: 6,
-    alignItems: 'center',
+    margin: 0,
+    textAlign: 'center',
   },
-  skillLevel: {
-    color: '#4fc3f7',
+  specialBadge: {
+    background: 'rgba(123,45,142,0.3)',
+    color: '#c97dff',
+    padding: '2px 10px',
+    borderRadius: 10,
     fontSize: 11,
     fontWeight: 'bold',
   },
-  skillEffect: {
-    color: '#888',
-    fontSize: 11,
-  },
+  hint: { color: '#666', fontSize: 11, margin: 0 },
   footer: {
     color: '#555',
     fontSize: 12,

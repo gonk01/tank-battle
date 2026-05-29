@@ -6,23 +6,34 @@ import React from 'react';
 import { GameCanvas } from './GameCanvas';
 import { HUD } from './HUD';
 import { UpgradeChoiceModal } from './UpgradeChoiceModal';
+import { SpecialSkillModal } from './SpecialSkillModal';
+import { IceSlowChoiceModal } from './IceSlowChoiceModal';
 import { GameOverOverlay } from './GameOverOverlay';
 import { useGameEngine } from '../hooks/useGameEngine';
-import type { ThemeConfig } from '../engine/types';
+import type { ThemeConfig, Difficulty as DifficultyType } from '../engine/types';
 
 interface GameContainerProps {
   theme: ThemeConfig;
+  difficulty: DifficultyType;
   onBackToMenu: () => void;
 }
 
-export const GameContainer: React.FC<GameContainerProps> = ({ theme, onBackToMenu }) => {
-  const { canvasRef, state, restart, chooseUpgrade } = useGameEngine(theme);
+export const GameContainer: React.FC<GameContainerProps> = ({ theme, difficulty, onBackToMenu }) => {
+  const {
+    canvasRef, state, restart, chooseUpgrade,
+    selectSpecialSkillChoice, applySpecialSkill, applyIceSlowChoice, toggleSound,
+  } = useGameEngine(theme, difficulty);
 
   return (
     <div style={styles.wrapper}>
       <div style={styles.topBar}>
-        <button style={styles.backBtn} onClick={onBackToMenu}>← 返回选图</button>
-        <button style={styles.restartBtn} onClick={restart}>🔄 重新开始</button>
+        <button style={styles.backBtn} onClick={onBackToMenu}>← 返回选择</button>
+        <div style={styles.topRight}>
+          <button style={styles.soundBtn} onClick={toggleSound} title={state.soundMuted ? '开启音效' : '静音'}>
+            {state.soundMuted ? '🔇' : '🔊'}
+          </button>
+          <button style={styles.restartBtn} onClick={restart}>🔄 重新开始</button>
+        </div>
       </div>
 
       <HUD state={state} />
@@ -30,7 +41,8 @@ export const GameContainer: React.FC<GameContainerProps> = ({ theme, onBackToMen
       <div style={styles.gameArea}>
         <GameCanvas canvasRef={canvasRef} />
 
-        {state.showUpgradeChoice && (
+        {/* 一级升级弹窗 */}
+        {state.showUpgradeChoice && !state.showSpecialSkillChoice && (
           <UpgradeChoiceModal
             level={state.level}
             hp={state.hp}
@@ -39,16 +51,36 @@ export const GameContainer: React.FC<GameContainerProps> = ({ theme, onBackToMen
             hpChoiceCount={0}
             skills={state.skills}
             onChoose={chooseUpgrade}
+            onSpecialSkillClick={selectSpecialSkillChoice}
           />
         )}
 
+        {/* 二级特殊技能弹窗 */}
+        {state.showSpecialSkillChoice && (
+          <SpecialSkillModal
+            choices={state.specialSkillChoices}
+            level={state.level}
+            skills={state.specialSkills}
+            onChoose={applySpecialSkill}
+          />
+        )}
+
+        {/* 冰封子选择弹窗 */}
+        {state.pendingIceSlowChoice && (
+          <IceSlowChoiceModal onChoose={applyIceSlowChoice} />
+        )}
+
+        {/* 游戏结束弹窗 */}
         <GameOverOverlay
           gameOver={state.gameOver}
           score={state.score}
           kills={state.kills}
           timeSurvived={state.timeSurvived}
           level={state.level}
+          difficulty={state.difficulty}
+          specialSkills={state.specialSkills}
           onRestart={restart}
+          onBackToMenu={onBackToMenu}
         />
       </div>
 
@@ -76,6 +108,10 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'space-between',
     marginBottom: 6,
   },
+  topRight: {
+    display: 'flex',
+    gap: 8,
+  },
   backBtn: {
     background: 'transparent',
     border: '1px solid #0f3460',
@@ -84,6 +120,15 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 6,
     cursor: 'pointer',
     fontSize: 12,
+  },
+  soundBtn: {
+    background: 'transparent',
+    border: '1px solid #0f3460',
+    color: '#888',
+    padding: '4px 8px',
+    borderRadius: 6,
+    cursor: 'pointer',
+    fontSize: 16,
   },
   restartBtn: {
     background: 'transparent',

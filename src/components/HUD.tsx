@@ -1,11 +1,11 @@
 // ============================================================
-//  坦克大战 — 顶部信息栏
+//  坦克大战 — 顶部信息栏（含特殊技能徽章）
 // ============================================================
 
 import React from 'react';
-import type { GameState, PlayerSkills } from '../engine/types';
-import { SkillType } from '../engine/types';
-import { SKILL_ICONS } from '../engine/types';
+import type { GameState } from '../engine/types';
+import { SkillType, SKILL_ICONS } from '../engine/types';
+import { SpecialSkillType, SPECIAL_SKILL_ICONS, SPECIAL_SKILL_NAMES, DIFFICULTY_NAMES } from '../engine/types';
 import { getTheme } from '../engine/themes';
 
 interface HUDProps {
@@ -14,9 +14,9 @@ interface HUDProps {
 
 export const HUD: React.FC<HUDProps> = ({ state }) => {
   const {
-    score, hp, maxHp, attack, level,
+    hp, maxHp, attack, level,
     expProgress, expNeeded, kills, timeSurvived,
-    skills, themeId, gameOver,
+    skills, specialSkills, themeId, difficulty, gameOver,
   } = state;
 
   const theme = getTheme(themeId);
@@ -24,10 +24,7 @@ export const HUD: React.FC<HUDProps> = ({ state }) => {
   const seconds = timeSurvived % 60;
   const timeStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
 
-  // HP 条百分比
   const hpPct = Math.max(0, (hp / maxHp) * 100);
-
-  // 经验条百分比
   const expPct = Math.min(1, Math.max(0, expProgress));
 
   if (gameOver) return null;
@@ -38,7 +35,9 @@ export const HUD: React.FC<HUDProps> = ({ state }) => {
       <div style={styles.row1}>
         <div style={styles.section}>
           <span style={styles.label}>🏆</span>
-          <span style={styles.score}>{score}</span>
+          <span style={styles.score}>{kills}</span>
+        </div>
+        <div style={styles.section}>
           <span style={styles.label}>💀</span>
           <span style={styles.kills}>{kills}</span>
         </div>
@@ -69,7 +68,13 @@ export const HUD: React.FC<HUDProps> = ({ state }) => {
               width: `${expPct * 100}%`,
             }} />
           </div>
-          <span style={styles.expText}>{expNeeded > 0 ? `-${expNeeded}` : 'MAX'}</span>
+          <span style={styles.expText}>{expNeeded > 0 ? `-${expNeeded}杀` : 'MAX'}</span>
+        </div>
+
+        <div style={styles.section}>
+          <span style={styles.mapName}>
+            🎚️ {DIFFICULTY_NAMES[difficulty]}
+          </span>
         </div>
 
         <div style={styles.mapName}>
@@ -82,10 +87,10 @@ export const HUD: React.FC<HUDProps> = ({ state }) => {
         </div>
       </div>
 
-      {/* 第二行：技能 */}
+      {/* 第二行：被动技能 */}
       <div style={styles.row2}>
         {(Object.values(SkillType) as SkillType[]).map((st) => {
-          const s = skills[st as keyof PlayerSkills];
+          const s = skills[st];
           const lv = s?.level || 0;
           return (
             <div
@@ -96,6 +101,28 @@ export const HUD: React.FC<HUDProps> = ({ state }) => {
               }}
             >
               <span>{SKILL_ICONS[st]}</span>
+              <span style={styles.skillLevelText}>{lv}</span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* 第三行：特殊技能 */}
+      <div style={styles.row2}>
+        {(Object.values(SpecialSkillType) as SpecialSkillType[]).map((st) => {
+          const s = specialSkills[st];
+          const lv = s?.level || 0;
+          return (
+            <div
+              key={st}
+              title={SPECIAL_SKILL_NAMES[st]}
+              style={{
+                ...styles.specialBadge,
+                opacity: lv > 0 ? 1 : 0.35,
+                background: lv > 0 ? 'rgba(123,45,142,0.3)' : 'rgba(255,255,255,0.03)',
+              }}
+            >
+              <span>{SPECIAL_SKILL_ICONS[st]}</span>
               <span style={styles.skillLevelText}>{lv}</span>
             </div>
           );
@@ -173,6 +200,16 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'rgba(255,255,255,0.05)',
     padding: '1px 6px',
     borderRadius: 8,
+    fontSize: 12,
+    transition: 'opacity 0.2s',
+  },
+  specialBadge: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 2,
+    padding: '1px 6px',
+    borderRadius: 8,
+    border: '1px solid rgba(123,45,142,0.3)',
     fontSize: 12,
     transition: 'opacity 0.2s',
   },

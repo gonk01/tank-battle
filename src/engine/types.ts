@@ -42,6 +42,35 @@ export interface Rect {
 }
 
 // ============================================================
+//  难度系统
+// ============================================================
+
+export const Difficulty = {
+  EASY: 'easy',
+  NORMAL: 'normal',
+  HARD: 'hard',
+} as const;
+export type Difficulty = (typeof Difficulty)[keyof typeof Difficulty];
+
+export const DIFFICULTY_NAMES: Record<Difficulty, string> = {
+  [Difficulty.EASY]: '简单',
+  [Difficulty.NORMAL]: '普通',
+  [Difficulty.HARD]: '困难',
+};
+
+export const DIFFICULTY_ICONS: Record<Difficulty, string> = {
+  [Difficulty.EASY]: '🌱',
+  [Difficulty.NORMAL]: '⚔️',
+  [Difficulty.HARD]: '💀',
+};
+
+export const DIFFICULTY_DESCRIPTIONS: Record<Difficulty, string> = {
+  [Difficulty.EASY]: '3 敌人开局，升级快，大型坦克弱',
+  [Difficulty.NORMAL]: '5 敌人开局，标准规则',
+  [Difficulty.HARD]: '8 敌人开局，升级慢，大型坦克强且加速追击',
+};
+
+// ============================================================
 //  主题系统
 // ============================================================
 
@@ -79,7 +108,7 @@ export interface ThemeConfig {
 }
 
 // ============================================================
-//  技能系统
+//  被动技能系统（原有 6 项）
 // ============================================================
 
 export const SkillType = {
@@ -115,6 +144,52 @@ export interface SkillState {
   level: number; // 0 = 未获取
 }
 
+// ============================================================
+//  特殊技能系统（新增 6 项）
+// ============================================================
+
+export const SpecialSkillType = {
+  CLONE: 'clone',
+  TELEPORT: 'teleport',
+  INVISIBILITY: 'invisibility',
+  MINE: 'mine',
+  HOMING: 'homing',
+  ICE_SLOW: 'iceSlow',
+} as const;
+export type SpecialSkillType = (typeof SpecialSkillType)[keyof typeof SpecialSkillType];
+
+export const SPECIAL_SKILL_ICONS: Record<SpecialSkillType, string> = {
+  [SpecialSkillType.CLONE]: '👥',
+  [SpecialSkillType.TELEPORT]: '⚡',
+  [SpecialSkillType.INVISIBILITY]: '👻',
+  [SpecialSkillType.MINE]: '💣',
+  [SpecialSkillType.HOMING]: '🎯',
+  [SpecialSkillType.ICE_SLOW]: '❄️',
+};
+
+export const SPECIAL_SKILL_NAMES: Record<SpecialSkillType, string> = {
+  [SpecialSkillType.CLONE]: '分身',
+  [SpecialSkillType.TELEPORT]: '瞬移避险',
+  [SpecialSkillType.INVISIBILITY]: '隐身',
+  [SpecialSkillType.MINE]: '地雷放置',
+  [SpecialSkillType.HOMING]: '追踪弹',
+  [SpecialSkillType.ICE_SLOW]: '冰封减速',
+};
+
+export interface SpecialSkillState {
+  type: SpecialSkillType;
+  level: number; // 0 = 未获取
+}
+
+export interface PlayerSpecialSkills {
+  clone: SpecialSkillState;
+  teleport: SpecialSkillState;
+  invisibility: SpecialSkillState;
+  mine: SpecialSkillState;
+  homing: SpecialSkillState;
+  iceSlow: SpecialSkillState;
+}
+
 export interface PlayerSkills {
   speed: SkillState;
   ricochet: SkillState;
@@ -122,16 +197,36 @@ export interface PlayerSkills {
   dodge: SkillState;
   pierce: SkillState;
   regen: SkillState;
+  special: PlayerSpecialSkills;
+}
+
+// ============================================================
+//  游戏实体数据
+// ============================================================
+
+export interface MineData {
+  x: number;
+  y: number;
+  size: number;
+  alive: boolean;
+  pulseTimer: number;
+}
+
+export interface LargeTankWarningData {
+  x: number;
+  y: number;
+  timer: number;    // 剩余帧数
+  duration: number; // 总帧数（用于渐出计算）
 }
 
 /** 升级选择项 */
 export interface UpgradeChoice {
-  type: 'hp' | 'attack' | 'skill';
-  skillType?: SkillType;
+  type: 'hp' | 'attack' | 'special';
+  specialType?: SpecialSkillType;
 }
 
 // ============================================================
-//  游戏状态
+//  游戏状态（React 侧消费）
 // ============================================================
 
 export interface GameState {
@@ -140,16 +235,23 @@ export interface GameState {
   maxHp: number;
   attack: number;
   level: number;
-  expProgress: number;   // 当前已得积分（% 下一级所需）
-  expNeeded: number;      // 升到下一级所需积分数
+  expProgress: number;     // 进度 0~1
+  expNeeded: number;        // 距下一级还需击杀数
   kills: number;
-  timeSurvived: number;   // 秒
+  timeSurvived: number;     // 秒
   gameOver: boolean;
   paused: boolean;
   upgrading: boolean;
   showUpgradeChoice: boolean;
   themeId: ThemeId;
+  difficulty: Difficulty;
   skills: PlayerSkills;
+  specialSkills: PlayerSpecialSkills;
+  showSpecialSkillChoice: boolean;
+  specialSkillChoices: SpecialSkillType[];
+  pendingIceSlowChoice: boolean;
+  hasLargeTankWarning: boolean;
+  soundMuted: boolean;
 }
 
 export interface KeysPressed {

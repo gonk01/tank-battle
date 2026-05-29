@@ -1,5 +1,5 @@
 // ============================================================
-//  坦克大战 — 敌人 AI（近战）
+//  坦克大战 — 敌人 AI（近战 + 分身 AI）
 // ============================================================
 
 import { Tank } from './Tank';
@@ -13,15 +13,20 @@ export function updateEnemyAI(
   enemy: Tank,
   map: GameMap,
   allTanks: Tank[],
-  player: Tank
+  player: Tank,
+  isPlayerInvisible: boolean = false
 ): number {
   if (!enemy.alive) return 0;
 
   enemy.aiTimer--;
 
   if (enemy.aiTimer <= 0) {
-    // 60% 朝玩家方向
-    if (Math.random() < 0.6 && player.alive) {
+    // 玩家隐身时完全随机移动
+    if (isPlayerInvisible || !player.alive) {
+      const dirs = [Direction.UP, Direction.DOWN, Direction.LEFT, Direction.RIGHT];
+      enemy.dir = dirs[Math.floor(Math.random() * dirs.length)];
+    } else if (Math.random() < 0.6) {
+      // 60% 朝玩家方向
       const dx = player.cx - enemy.cx;
       const dy = player.cy - enemy.cy;
       if (Math.abs(dx) > Math.abs(dy)) {
@@ -33,7 +38,7 @@ export function updateEnemyAI(
       const dirs = [Direction.UP, Direction.DOWN, Direction.LEFT, Direction.RIGHT];
       enemy.dir = dirs[Math.floor(Math.random() * dirs.length)];
     }
-    enemy.aiTimer = 30 + Math.floor(Math.random() * 40); // 更活跃
+    enemy.aiTimer = 30 + Math.floor(Math.random() * 40);
   }
 
   const moved = enemy.move(enemy.dir, map, allTanks);
@@ -46,27 +51,60 @@ export function updateEnemyAI(
   return 0;
 }
 
-/** 检测敌人近战攻击，返回伤害值（0=无攻击） */
+/** 分身 AI：朝最近敌人移动（纯追击），靠近自爆 */
+export function updateCloneAI(
+  clone: Tank,
+  map: GameMap,
+  allTanks: Tank[],
+  _player: Tank
+): void {
+  if (!clone.alive) return;
+
+  // 找最近的敌人
+  let nearest: Tank | null = null;
+  let nearestDist = Infinity;
+  for (const t of allTanks) {
+    if (!t.alive || t.isPlayer || (t as any).isClone) continue;
+    const dist = Math.hypot(t.cx - clone.cx, t.cy - clone.cy);
+    if (dist < nearestDist) {
+      nearestDist = dist;
+      nearest = t;
+    }
+  }
+
+  // 朝最近敌人移动
+  if (nearest) {
+    const dx = nearest.cx - clone.cx;
+    const dy = nearest.cy - clone.cy;
+    if (Math.abs(dx) > Math.abs(dy)) {
+      clone.dir = dx > 0 ? Direction.RIGHT : Direction.LEFT;
+    } else {
+      clone.dir = dy > 0 ? Direction.DOWN : Direction.UP;
+    }
+  }
+
+  clone.move(clone.dir, map, allTanks);
+}
+
+/** 检测敌人近战攻击，返回伤害值 */
 export function checkMeleeAttack(enemy: Tank, player: Tank, difficultyDamage: number): number {
   if (!enemy.alive || !player.alive) return 0;
   if (enemy.meleeCooldown > 0) return 0;
 
-  // 距离检测 ≤ 48px
   const dist = Math.hypot(enemy.cx - player.cx, enemy.cy - player.cy);
   if (dist > 48) return 0;
 
-  enemy.meleeCooldown = 60; // 1 秒冷却
+  enemy.meleeCooldown = 60;
   return difficultyDamage;
 }
 
 /** 敌人出生点（四边随机） */
 export const ENEMY_SPAWN_POSITIONS = (() => {
   return Array.from({ length: 40 }, (_, i) => {
-    // 每边 10 个位置
-    if (i < 10) return { col: 2 + i * 3, row: 0 };           // 上
-    if (i < 20) return { col: 2 + (i - 10) * 3, row: 23 };   // 下
-    if (i < 30) return { col: 0, row: 2 + (i - 20) * 2 };    // 左
-    return { col: 31, row: 2 + (i - 30) * 2 };                // 右
+    if (i < 10) return { col: 2 + i * 3, row: 0 };
+    if (i < 20) return { col: 2 + (i - 10) * 3, row: 23 };
+    if (i < 30) return { col: 0, row: 2 + (i - 20) * 2 };
+    return { col: 31, row: 2 + (i - 30) * 2 };
   });
 })();
 
@@ -96,8 +134,6 @@ export function trySpawnEnemy(
     enemy.flash = 30;
     enemy.maxHp = getEnemyHpFn(kills);
     enemy.hp = enemy.maxHp;
-    // 速度通过外部乘数调整
-    // 伤害固定为 1（近战）
     return enemy;
   }
 

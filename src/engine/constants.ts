@@ -2,7 +2,8 @@
 //  坦克大战 — 常量 & 配置
 // ============================================================
 
-import { SkillType } from './types';
+import { SkillType, SpecialSkillType, Difficulty } from './types';
+import type { PlayerSkills, PlayerSpecialSkills, Difficulty as DifficultyType } from './types';
 
 // ====== 地图尺寸 ======
 export const CELL = 32;
@@ -11,7 +12,7 @@ export const ROWS = 24;
 export const GAME_W = CELL * COLS; // 1024
 export const GAME_H = CELL * ROWS; // 768
 
-// ====== 坦克属性 ======
+// ====== 坦克属性（数值平衡后） ======
 export const TANK_SIZE = 28;
 export const BULLET_SIZE = 6;
 export const BULLET_SPEED = 5;
@@ -21,8 +22,12 @@ export const ENEMY_SPEED = 1.2;
 export const PLAYER_SPAWN_COL = Math.floor(COLS / 2); // 16
 export const PLAYER_SPAWN_ROW = ROWS - 3;              // 21
 
+// ====== 玩家初始属性（平衡后：HP 3→5, ATK 1→2） ======
+export const PLAYER_INITIAL_HP = 5;
+export const PLAYER_INITIAL_ATTACK = 2;
+
 // ====== 敌人配置 ======
-export const INITIAL_ENEMY_COUNT = 10;
+export const INITIAL_ENEMY_COUNT = 10; // 保留兼容，实际由难度配置覆盖
 export const MAX_ALIVE_ENEMIES = 10;
 export const SPAWN_INTERVAL_BASE = 180; // 3 秒（60fps）
 export const SPAWN_INTERVAL_MIN = 30;   // 0.5 秒
@@ -40,26 +45,173 @@ export function getMaxAliveEnemies(minutes: number): number {
   return Math.min(30, Math.floor(MAX_ENEMIES_ON_MAP_BASE + minutes * MAX_ENEMIES_ON_MAP_PER_MIN));
 }
 
-// ====== 升级公式 ======
-export const SCORE_MULTIPLIER = 5;
+// ====== 难度配置 ======
 
-/** 升到目标 level 需要的累计积分 */
+export interface DifficultyConfig {
+  initialEnemyCount: number;
+  largeTankSpawnInterval: number;   // 秒
+  largeTankHpMultiplier: number;
+  largeTankHpDoubleTime: number;    // 秒
+  largeTankSpeedBoost: boolean;
+  killLevelBase: number;
+  killLevelTierSize: number;        // 每档多少级
+  killLevelTierStep: number;        // 每档 +N 击杀
+  enemyBaseHp: number;
+  enemyDamageBase: number;
+}
+
+export const DIFFICULTY_CONFIGS: Record<DifficultyType, DifficultyConfig> = {
+  [Difficulty.EASY]: {
+    initialEnemyCount: 3,
+    largeTankSpawnInterval: 40,
+    largeTankHpMultiplier: 0.7,
+    largeTankHpDoubleTime: 120,
+    largeTankSpeedBoost: false,
+    killLevelBase: 3,
+    killLevelTierSize: 10,
+    killLevelTierStep: 5,
+    enemyBaseHp: 1,
+    enemyDamageBase: 1,
+  },
+  [Difficulty.NORMAL]: {
+    initialEnemyCount: 5,
+    largeTankSpawnInterval: 30,
+    largeTankHpMultiplier: 1.0,
+    largeTankHpDoubleTime: 60,
+    largeTankSpeedBoost: false,
+    killLevelBase: 5,
+    killLevelTierSize: 10,
+    killLevelTierStep: 5,
+    enemyBaseHp: 1,
+    enemyDamageBase: 1,
+  },
+  [Difficulty.HARD]: {
+    initialEnemyCount: 8,
+    largeTankSpawnInterval: 20,
+    largeTankHpMultiplier: 1.2,
+    largeTankHpDoubleTime: 40,
+    largeTankSpeedBoost: true,
+    killLevelBase: 7,
+    killLevelTierSize: 10,
+    killLevelTierStep: 5,
+    enemyBaseHp: 2,
+    enemyDamageBase: 2,
+  },
+};
+
+// ====== 击杀数升级公式（替换积分制） ======
+
+/** 升到第 level 级所需击杀数（单级） */
+export function getKillsForLevel(level: number, difficulty: DifficultyType): number {
+  const cfg = DIFFICULTY_CONFIGS[difficulty];
+  const tier = Math.floor(level / cfg.killLevelTierSize);
+  return cfg.killLevelBase + tier * cfg.killLevelTierStep;
+}
+
+/** 升到第 level 级所需累计击杀数 */
+export function getCumulativeKillsForLevel(level: number, difficulty: DifficultyType): number {
+  let total = 0;
+  for (let i = 0; i < level; i++) {
+    total += getKillsForLevel(i, difficulty);
+  }
+  return total;
+}
+
+/** 根据击杀数反推等级 */
+export function getLevelFromKills(kills: number, difficulty: DifficultyType): number {
+  let level = 0;
+  while (getCumulativeKillsForLevel(level + 1, difficulty) <= kills) {
+    level++;
+  }
+  return level;
+}
+
+/** 击杀数经验进度 0~1 */
+export function getKillExpProgress(kills: number, level: number, difficulty: DifficultyType): number {
+  const currentMin = getCumulativeKillsForLevel(level, difficulty);
+  const nextMin = getCumulativeKillsForLevel(level + 1, difficulty);
+  if (nextMin <= currentMin) return 0;
+  return Math.min(1, (kills - currentMin) / (nextMin - currentMin));
+}
+
+/** 距下一级还需多少击杀 */
+export function getKillExpNeeded(level: number, difficulty: DifficultyType): number {
+  return getKillsForLevel(level, difficulty);
+}
+
+// 保留旧函数（兼容）
+export const SCORE_MULTIPLIER = 5;
 export function getScoreForLevel(level: number): number {
   if (level <= 0) return 0;
   return SCORE_MULTIPLIER * level * (level + 1) / 2;
 }
-
-/** 从当前 level 升到下一级还需多少分 */
 export function getExpNeeded(level: number): number {
   return getScoreForLevel(level + 1) - getScoreForLevel(level);
 }
-
-/** 当前积分对应的经验进度（0~1） */
 export function getExpProgress(score: number, level: number): number {
   const currentMin = getScoreForLevel(level);
   const nextMin = getScoreForLevel(level + 1);
   if (nextMin <= currentMin) return 0;
   return (score - currentMin) / (nextMin - currentMin);
+}
+
+// ====== 大型坦克常量 ======
+export const LARGE_TANK_SIZE = 56;
+export const LARGE_TANK_SPEED = 0.8;
+export const LARGE_TANK_PURSUIT_SPEED = 1.2;
+export const LARGE_TANK_SHOOT_INTERVAL = 90;   // 帧
+export const LARGE_TANK_BULLET_SPEED = 3;
+export const LARGE_TANK_MIN_RANGE = 150;
+export const LARGE_TANK_MAX_RANGE = 250;
+export const LARGE_TANK_WARNING_DURATION = 180; // 3 秒预警
+export const LARGE_TANK_RESPAWN_LEVEL_INTERVAL = 5;
+export const LARGE_TANK_SPAWN_COL = Math.floor(COLS / 2);
+export const LARGE_TANK_SPAWN_ROW = 2;
+
+// ====== 特殊技能数值公式 ======
+
+/** 通用冷却（帧）：初始 baseInterval 秒，每次选择递减 */
+export function getSpecialSkillCooldownFrames(selectionCount: number, baseIntervalSec = 10): number {
+  let cd = baseIntervalSec * 60; // 转为帧
+  for (let i = 0; i < selectionCount; i++) {
+    const reduction = Math.max(0.1, 1.0 - i * 0.1);
+    cd -= reduction * 60;
+  }
+  return Math.max(120, Math.round(cd)); // 最低 2 秒
+}
+
+/** 分身/追踪弹数量 */
+export function getCloneOrHomingCount(selections: number): number {
+  return Math.min(5, Math.ceil(selections / 2));
+}
+
+/** 隐身触发间隔（帧） */
+export function getInvisibilityTriggerFrames(selections: number): number {
+  let interval = 6 * 60; // 初始 6 秒
+  for (let i = 0; i < selections; i++) {
+    const reduction = Math.max(0.1, 0.6 - i * 0.1);
+    interval -= reduction * 60;
+  }
+  return Math.max(90, Math.round(interval)); // 最低 1.5 秒
+}
+
+/** 隐身持续时间（帧） */
+export function getInvisibilityDurationFrames(selections: number): number {
+  let duration = 1.2 * 60; // 初始 1.2 秒
+  for (let i = 0; i < selections; i++) {
+    const reduction = Math.max(0.05, 0.12 - i * 0.01);
+    duration -= reduction * 60;
+  }
+  return Math.max(18, Math.round(duration)); // 最低 0.3 秒
+}
+
+/** 冰封减速百分比 */
+export function getIceSlowPct(slowBoosts: number): number {
+  let pct = 50;
+  for (let i = 0; i < slowBoosts; i++) {
+    pct += Math.max(1, 8 - i * 1);
+  }
+  return Math.min(90, pct);
 }
 
 // ====== 技能配置表 ======
@@ -69,7 +221,6 @@ export interface SkillConfig {
   name: string;
   icon: string;
   description: string;
-  /** 每级效果描述 */
   effectDesc: (level: number) => string;
 }
 
@@ -88,11 +239,11 @@ export const SKILL_CONFIGS: SkillConfig[] = [
     type: SkillType.RICOCHET,
     name: '弹射子弹',
     icon: '🔄',
-    description: '子弹撞钢墙反弹，每级 +1 次弹射，伤害递减',
+    description: '子弹撞钢墙反弹，每级 +1 次弹射',
     effectDesc: (lv) => {
       const damagePct = Math.min(90, 60 + lv * 5);
       if (lv === 0) return `获得 ${1} 次弹射 (伤害保留 ${damagePct}%)`;
-      return `弹射 ${lv + 1} → ${lv + 1 + 1} 次 (伤害 ${damagePct}%)`;
+      return `弹射 ${lv + 1} → ${lv + 2} 次 (伤害 ${damagePct}%)`;
     },
   },
   {
@@ -111,7 +262,7 @@ export const SKILL_CONFIGS: SkillConfig[] = [
     type: SkillType.DODGE,
     name: '闪避',
     icon: '🍀',
-    description: '概率闪避近战攻击，上限 50%',
+    description: '概率闪避攻击，上限 50%',
     effectDesc: (lv) => {
       const pct = Math.min(50, 8 + (lv + 1) * 4);
       if (lv === 0) return `获得 ${pct}% 闪避率`;
@@ -147,7 +298,7 @@ export function getSkillConfig(type: SkillType): SkillConfig {
 }
 
 /** 创建初始技能状态 */
-export function createDefaultSkills() {
+export function createDefaultSkills(): PlayerSkills {
   return {
     speed: { type: SkillType.SPEED, level: 0 },
     ricochet: { type: SkillType.RICOCHET, level: 0 },
@@ -155,6 +306,18 @@ export function createDefaultSkills() {
     dodge: { type: SkillType.DODGE, level: 0 },
     pierce: { type: SkillType.PIERCE, level: 0 },
     regen: { type: SkillType.REGEN, level: 0 },
+    special: createDefaultSpecialSkills(),
+  };
+}
+
+export function createDefaultSpecialSkills(): PlayerSpecialSkills {
+  return {
+    clone: { type: SpecialSkillType.CLONE, level: 0 },
+    teleport: { type: SpecialSkillType.TELEPORT, level: 0 },
+    invisibility: { type: SpecialSkillType.INVISIBILITY, level: 0 },
+    mine: { type: SpecialSkillType.MINE, level: 0 },
+    homing: { type: SpecialSkillType.HOMING, level: 0 },
+    iceSlow: { type: SpecialSkillType.ICE_SLOW, level: 0 },
   };
 }
 
@@ -200,8 +363,14 @@ export function getRegenHeal(level: number): number {
   return level * 0.5;
 }
 
-// ====== 敌人难度递增 ======
-export function getEnemyHp(kills: number): number {
+// ====== 敌人难度递增（保留兼容 + 难度分档） ======
+export function getEnemyHp(kills: number, difficulty?: DifficultyType): number {
+  // 难度分档优先
+  if (difficulty) {
+    const cfg = DIFFICULTY_CONFIGS[difficulty];
+    return cfg.enemyBaseHp + Math.floor(kills / 20);
+  }
+  // 兼容旧逻辑
   if (kills < 10) return 1;
   if (kills < 20) return 1 + Math.floor(Math.random() * 2);
   if (kills < 30) return 2;
@@ -214,7 +383,11 @@ export function getEnemySpeedMultiplier(kills: number): number {
   return 1 + Math.floor(kills / 20) * 0.1;
 }
 
-export function getEnemyDamage(kills: number): number {
+export function getEnemyDamage(kills: number, difficulty?: DifficultyType): number {
+  if (difficulty) {
+    const cfg = DIFFICULTY_CONFIGS[difficulty];
+    return cfg.enemyDamageBase + (kills >= 40 ? 1 : 0);
+  }
   if (kills < 40) return 1;
   return 2;
 }
@@ -222,7 +395,3 @@ export function getEnemyDamage(kills: number): number {
 export function getEnemyAttack(): number {
   return 1;
 }
-
-// ====== 玩家初始属性 ======
-export const PLAYER_INITIAL_HP = 3;
-export const PLAYER_INITIAL_ATTACK = 1;
